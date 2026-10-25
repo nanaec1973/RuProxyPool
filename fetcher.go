@@ -22,15 +22,15 @@ type proxySource struct {
 	URL      string
 	Protocol string // "http", "socks5", "auto"
 	Country  string // "RU" или "MIX"
-	Type     string // "raw", "spys", "geonode", "monosans_geo"
+	Type     string // "raw", "spys", "geonode"
 }
 
 var defaultSources = []proxySource{
-	// Специализированные RU-источники (высший приоритет)
+	// 1. Приоритетные RU-источники
 	{
-		Name:     "ProxyScrape-RU-HTTP",
-		URL:      "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=10000&country=RU&ssl=all&anonymity=all",
-		Protocol: "http",
+		Name:     "Proxifly-RU",
+		URL:      "https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/countries/RU/data.txt",
+		Protocol: "auto",
 		Country:  "RU",
 		Type:     "raw",
 	},
@@ -42,9 +42,9 @@ var defaultSources = []proxySource{
 		Type:     "raw",
 	},
 	{
-		Name:     "Proxifly-RU",
-		URL:      "https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/countries/RU/data.txt",
-		Protocol: "auto",
+		Name:     "ProxyScrape-RU-HTTP",
+		URL:      "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=10000&country=RU&ssl=all&anonymity=all",
+		Protocol: "http",
 		Country:  "RU",
 		Type:     "raw",
 	},
@@ -56,52 +56,25 @@ var defaultSources = []proxySource{
 		Type:     "geonode",
 	},
 	{
-		Name:     "SpysMe-HTTP",
-		URL:      "https://spys.me/proxy.txt",
-		Protocol: "http",
-		Country:  "MIX",
-		Type:     "spys",
-	},
-	{
 		Name:     "SpysMe-SOCKS",
 		URL:      "https://spys.me/socks.txt",
 		Protocol: "socks5",
 		Country:  "MIX",
 		Type:     "spys",
 	},
-	// Крупные глобальные пулы (несколько тысяч адресов)
 	{
-		Name:     "Monosans-HTTP",
-		URL:      "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt",
+		Name:     "SpysMe-HTTP",
+		URL:      "https://spys.me/proxy.txt",
 		Protocol: "http",
 		Country:  "MIX",
-		Type:     "raw",
+		Type:     "spys",
 	},
+
+	// 2. Все 16 крупных мировых источников из proxy_checker.go (~20 000+ адресов)
 	{
-		Name:     "Monosans-SOCKS5",
-		URL:      "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks5.txt",
+		Name:     "OpenProxyList-SOCKS5",
+		URL:      "https://raw.githubusercontent.com/roosterkid/openproxylist/main/SOCKS5_RAW.txt",
 		Protocol: "socks5",
-		Country:  "MIX",
-		Type:     "raw",
-	},
-	{
-		Name:     "TheSpeedX-HTTP",
-		URL:      "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt",
-		Protocol: "http",
-		Country:  "MIX",
-		Type:     "raw",
-	},
-	{
-		Name:     "TheSpeedX-SOCKS5",
-		URL:      "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/socks5.txt",
-		Protocol: "socks5",
-		Country:  "MIX",
-		Type:     "raw",
-	},
-	{
-		Name:     "JetKai-HTTP",
-		URL:      "https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-http.txt",
-		Protocol: "http",
 		Country:  "MIX",
 		Type:     "raw",
 	},
@@ -112,10 +85,115 @@ var defaultSources = []proxySource{
 		Country:  "MIX",
 		Type:     "raw",
 	},
+	{
+		Name:     "TheSpeedX-SOCKS5",
+		URL:      "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks5.txt",
+		Protocol: "socks5",
+		Country:  "MIX",
+		Type:     "raw",
+	},
+	{
+		Name:     "Hookzof-SOCKS5",
+		URL:      "https://raw.githubusercontent.com/hookzof/socks5_list/master/proxy.txt",
+		Protocol: "socks5",
+		Country:  "MIX",
+		Type:     "raw",
+	},
+	{
+		Name:     "Monosans-All",
+		URL:      "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/all.txt",
+		Protocol: "socks5",
+		Country:  "MIX",
+		Type:     "raw",
+	},
+	{
+		Name:     "Monosans-HTTP",
+		URL:      "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt",
+		Protocol: "http",
+		Country:  "MIX",
+		Type:     "raw",
+	},
+	{
+		Name:     "Proxifly-SOCKS5",
+		URL:      "https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/socks5/data.txt",
+		Protocol: "socks5",
+		Country:  "MIX",
+		Type:     "raw",
+	},
+	{
+		Name:     "Proxifly-HTTP",
+		URL:      "https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/http/data.txt",
+		Protocol: "http",
+		Country:  "MIX",
+		Type:     "raw",
+	},
+	{
+		Name:     "Zaeem20-SOCKS5",
+		URL:      "https://raw.githubusercontent.com/Zaeem20/FREE_PROXIES_LIST/master/socks5.txt",
+		Protocol: "socks5",
+		Country:  "MIX",
+		Type:     "raw",
+	},
+	{
+		Name:     "Vakhov-SOCKS5",
+		URL:      "https://raw.githubusercontent.com/vakhov/fresh-proxy-list/master/socks5.txt",
+		Protocol: "socks5",
+		Country:  "MIX",
+		Type:     "raw",
+	},
+	{
+		Name:     "Vakhov-HTTP",
+		URL:      "https://raw.githubusercontent.com/vakhov/fresh-proxy-list/master/http.txt",
+		Protocol: "http",
+		Country:  "MIX",
+		Type:     "raw",
+	},
+	{
+		Name:     "ErcinDedeoglu-SOCKS5",
+		URL:      "https://raw.githubusercontent.com/ErcinDedeoglu/proxies/main/proxies/socks5.txt",
+		Protocol: "socks5",
+		Country:  "MIX",
+		Type:     "raw",
+	},
+	{
+		Name:     "Sunny9577-SOCKS5",
+		URL:      "https://raw.githubusercontent.com/sunny9577/proxy-scraper/master/generated/socks5_proxies.txt",
+		Protocol: "socks5",
+		Country:  "MIX",
+		Type:     "raw",
+	},
+	{
+		Name:     "ALIILAPRO-SOCKS5",
+		URL:      "https://raw.githubusercontent.com/ALIILAPRO/Proxy/main/socks5.txt",
+		Protocol: "socks5",
+		Country:  "MIX",
+		Type:     "raw",
+	},
+	{
+		Name:     "ProxyScrape-Global-SOCKS5",
+		URL:      "https://api.proxyscrape.com/v2/?request=getproxies&protocol=socks5&timeout=5000",
+		Protocol: "socks5",
+		Country:  "MIX",
+		Type:     "raw",
+	},
+	{
+		Name:     "ProxyScrape-Global-HTTP",
+		URL:      "https://api.proxyscrape.com/v2/?request=getproxies&protocol=http&timeout=5000",
+		Protocol: "http",
+		Country:  "MIX",
+		Type:     "raw",
+	},
+	{
+		Name:     "TheSpeedX-HTTP",
+		URL:      "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt",
+		Protocol: "http",
+		Country:  "MIX",
+		Type:     "raw",
+	},
 }
 
-// FetchAllCandidates параллельно собирает тысячи адресов из всех источников,
-// ставя в начало списка российские (RU) и пользовательские адреса.
+// FetchAllCandidates параллельно собирает ~20 000+ адресов из всех источников,
+// ставя в начало очереди российские (RU) и ранее проверенные серверы.
 func FetchAllCandidates(customList []CandidateProxy, maxTotal int) []CandidateProxy {
 	var (
 		mu         sync.Mutex
@@ -130,7 +208,7 @@ func FetchAllCandidates(customList []CandidateProxy, maxTotal int) []CandidatePr
 			return
 		}
 		if c.Protocol == "" || c.Protocol == "auto" {
-			c.Protocol = "http"
+			c.Protocol = "socks5"
 		}
 		key := c.Protocol + "://" + addr
 
@@ -149,58 +227,66 @@ func FetchAllCandidates(customList []CandidateProxy, maxTotal int) []CandidatePr
 		}
 	}
 
-	// Сначала добавляем пользовательские прокси
 	for _, c := range customList {
 		addCandidate(c)
 	}
 
 	var wg sync.WaitGroup
-	client := &http.Client{Timeout: 12 * time.Second}
+	client := &http.Client{Timeout: 10 * time.Second}
+	resultsBySource := make([][]CandidateProxy, len(defaultSources))
 
-	for _, src := range defaultSources {
+	for idx, src := range defaultSources {
 		wg.Add(1)
-		go func(s proxySource) {
+		go func(i int, s proxySource) {
 			defer wg.Done()
 			items, err := fetchFromSource(client, s)
 			if err != nil {
-				log.Printf("[FETCHER] Источник %s недоступен: %v", s.Name, err)
+				log.Printf("[FETCHER] Источник %s пропущен: %v", s.Name, err)
 				return
 			}
-			for _, item := range items {
-				addCandidate(item)
-			}
-		}(src)
+			resultsBySource[i] = items
+		}(idx, src)
 	}
 
 	wg.Wait()
 
-	// Сначала идут все приоритетные RU-адреса, затем остальные до лимита maxTotal
-	result := make([]CandidateProxy, 0, len(ruProxies)+len(mixProxies))
-	result = append(result, ruProxies...)
-
-	remaining := maxTotal - len(result)
-	if remaining > 0 {
-		if len(mixProxies) > remaining {
-			result = append(result, mixProxies[:remaining]...)
-		} else {
-			result = append(result, mixProxies...)
+	// Объединяем строго в порядке приоритета источников
+	for _, items := range resultsBySource {
+		for _, item := range items {
+			addCandidate(item)
 		}
 	}
 
-	log.Printf("[FETCHER] Собрано кандидатов: %d (из них RU/Приоритетных: %d, Глобальных: %d)",
-		len(result), len(ruProxies), len(result)-len(ruProxies))
+	result := make([]CandidateProxy, 0, len(ruProxies)+len(mixProxies))
+	result = append(result, ruProxies...)
+
+	if maxTotal <= 0 {
+		result = append(result, mixProxies...)
+	} else {
+		remaining := maxTotal - len(result)
+		if remaining > 0 {
+			if len(mixProxies) > remaining {
+				result = append(result, mixProxies[:remaining]...)
+			} else {
+				result = append(result, mixProxies...)
+			}
+		}
+	}
+
+	log.Printf("[FETCHER] Собрано уникальных серверов из %d источников: %d (Приоритетных RU: %d, Глобальных: %d)",
+		len(defaultSources), len(result), len(ruProxies), len(result)-len(ruProxies))
 	return result
 }
 
 func fetchFromSource(client *http.Client, s proxySource) ([]CandidateProxy, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, "GET", s.URL, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; RuProxyPool/1.0)")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; RuProxyPool/2.0)")
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -212,7 +298,7 @@ func fetchFromSource(client *http.Client, s proxySource) ([]CandidateProxy, erro
 		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 
-	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 5*1024*1024)) // До 5 МБ
+	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024)) // До 10 МБ
 	if err != nil {
 		return nil, err
 	}
@@ -223,8 +309,6 @@ func fetchFromSource(client *http.Client, s proxySource) ([]CandidateProxy, erro
 		return parseGeoNodeJSON(body, s.Name)
 	case "spys":
 		return parseSpysTxt(body, s.Protocol, s.Name), nil
-	case "monosans_geo":
-		return parseMonosansGeo(body, s.Protocol, s.Name), nil
 	default:
 		return parseRawLines(body, s.Protocol, s.Country, s.Name), nil
 	}
@@ -265,7 +349,6 @@ func parseRawLines(body, defaultProto, defaultCountry, sourceName string) []Cand
 	return out
 }
 
-// Формат spys.me: "31.40.248.2:8080 RU-N-S! +"
 func parseSpysTxt(body, proto, sourceName string) []CandidateProxy {
 	var out []CandidateProxy
 	scanner := bufio.NewScanner(strings.NewReader(body))
@@ -294,32 +377,6 @@ func parseSpysTxt(body, proto, sourceName string) []CandidateProxy {
 	return out
 }
 
-// Формат monosans geolocation: "1.2.3.4:8080|RU|..."
-func parseMonosansGeo(body, proto, sourceName string) []CandidateProxy {
-	var out []CandidateProxy
-	scanner := bufio.NewScanner(strings.NewReader(body))
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		matches := ipPortRegex.FindStringSubmatch(line)
-		if len(matches) < 2 {
-			continue
-		}
-		addr := matches[1]
-		country := "MIX"
-		upper := strings.ToUpper(line)
-		if strings.Contains(upper, "|RU|") || strings.Contains(upper, "RUSSIA") || strings.Contains(upper, " RU ") {
-			country = "RU"
-		}
-		out = append(out, CandidateProxy{
-			Address:  addr,
-			Protocol: proto,
-			Country:  country,
-			Source:   sourceName,
-		})
-	}
-	return out
-}
-
 type geoNodeResponse struct {
 	Data []struct {
 		IP        string   `json:"ip"`
@@ -336,7 +393,7 @@ func parseGeoNodeJSON(body, sourceName string) ([]CandidateProxy, error) {
 	}
 	var out []CandidateProxy
 	for _, item := range parsed.Data {
-		proto := "http"
+		proto := "socks5"
 		for _, p := range item.Protocols {
 			if p == "socks5" {
 				proto = "socks5"

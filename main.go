@@ -18,16 +18,16 @@ func main() {
 		port = "8080"
 	}
 
-	workers := 180
+	workers := 250
 	if wStr := os.Getenv("SCAN_WORKERS"); wStr != "" {
 		if w, err := strconv.Atoi(wStr); err == nil && w > 0 {
 			workers = w
 		}
 	}
 
-	maxCandidates := 3000
+	maxCandidates := 25000 // Сканирует 25 000 уникальных адресов из 23 источников (0 = без лимита)
 	if mStr := os.Getenv("MAX_CANDIDATES"); mStr != "" {
-		if m, err := strconv.Atoi(mStr); err == nil && m > 0 {
+		if m, err := strconv.Atoi(mStr); err == nil && m >= 0 {
 			maxCandidates = m
 		}
 	}

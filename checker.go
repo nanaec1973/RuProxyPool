@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -142,14 +143,29 @@ func testTargetURL(client *http.Client, targetURL string) (int64, bool) {
 	}
 	defer resp.Body.Close()
 
-	_, _ = io.CopyN(io.Discard, resp.Body, 256)
+	bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 16384))
 	elapsed := time.Since(start).Milliseconds()
 	if elapsed == 0 {
 		elapsed = 1
 	}
 
+	bodyLower := strings.ToLower(string(bodyBytes))
+	// Отсекаем фейковые прокси-заглушки (echo REMOTE_ADDR)
+	if strings.Contains(bodyLower, "remote_addr") || strings.Contains(bodyLower, "http_x_forwarded_for") {
+		return 0, false
+	}
+
+	// Для Мосгорсуда дополнительно проверяем, что это не пустая заглушка
+	if strings.Contains(targetURL, "mos-gorsud.ru") {
+		if resp.StatusCode == 200 && len(bodyBytes) > 500 &&
+			(strings.Contains(bodyLower, "суд") || strings.Contains(bodyLower, "mos-gorsud") || strings.Contains(bodyLower, "html")) {
+			return elapsed, true
+		}
+		return 0, false
+	}
+
 	// Считаем ресурс доступным, если код ответа 2xx или 3xx (не 403 Geo-Block и не 5xx)
-	if resp.StatusCode >= 200 && resp.StatusCode < 400 {
+	if resp.StatusCode >= 200 && resp.StatusCode < 400 && len(bodyBytes) > 100 {
 		return elapsed, true
 	}
 	return 0, false
