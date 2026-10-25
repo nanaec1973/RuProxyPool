@@ -11,17 +11,18 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"sync"
 	"time"
 )
 
 // CheckCandidate проверяет один прокси-сервер:
-// 1. Быстрый TCP-пингователь (отсекает недоступные узлы за 2 сек).
+// 1. Быстрый TCP-пингователь (отсекает мертвые узлы за 1.8 сек).
 // 2. Пробный запрос к Яндексу / Мосгорсуду через прокси.
-// 3. При успехе — параллельная проверка доступности всех ключевых ресурсов РФ.
+// 3. При успехе — параллельная проверка доступности всех ключевых ресурсов РФ за 4 сек.
 func CheckCandidate(c CandidateProxy) (*ProxyResult, bool) {
 	// Шаг 1: Быстрый TCP-коннект
 	tcpStart := time.Now()
-	conn, err := net.DialTimeout("tcp", c.Address, 2200*time.Millisecond)
+	conn, err := net.DialTimeout("tcp", c.Address, 1800*time.Millisecond)
 	if err != nil {
 		return nil, false
 	}
@@ -32,20 +33,37 @@ func CheckCandidate(c CandidateProxy) (*ProxyResult, bool) {
 	}
 
 	// Шаг 2: Создаем HTTP-клиент через прокси (HTTP или SOCKS5)
-	client, err := buildProxyHTTPClient(c.Address, c.Protocol, 6*time.Second)
+	client, err := buildProxyHTTPClient(c.Address, c.Protocol, 4500*time.Millisecond)
 	if err != nil {
 		return nil, false
 	}
 
-	// Быстрая первичная проверка: способен ли прокси вообще пропускать HTTPS-трафик к РФ (Яндекс или Мосгорсуд)
-	yaLat, yaOK := testTargetURL(client, "https://ya.ru")
-	mgsLat, mgsOK := testTargetURL(client, "https://mos-gorsud.ru")
+	// Быстрая первичная проверка: пропускает ли прокси трафик к РФ (Яндекс или Мосгорсуд параллельно)
+	var (
+		yaLat, mgsLat int64
+		yaOK, mgsOK   bool
+		probeWg       sync.WaitGroup
+	)
+	probeWg.Add(2)
+	go func() {
+		defer probeWg.Done()
+		yaLat, yaOK = testTargetURL(client, "https://ya.ru")
+	}()
+	go func() {
+		defer probeWg.Done()
+		mgsLat, mgsOK = testTargetURL(client, "https://mos-gorsud.ru")
+	}()
+	probeWg.Wait()
+
 	if !yaOK && !mgsOK {
 		return nil, false
 	}
 
-	targets := make(map[string]int64)
-	var totalLatency int64
+	var (
+		mu           sync.Mutex
+		targets      = make(map[string]int64)
+		totalLatency int64
+	)
 
 	if yaOK {
 		targets["ya"] = yaLat
@@ -56,16 +74,24 @@ func CheckCandidate(c CandidateProxy) (*ProxyResult, bool) {
 		totalLatency += mgsLat
 	}
 
-	// Шаг 3: Проверяем остальные ключевые российские сайты
+	// Шаг 3: Параллельно проверяем остальные ключевые российские сайты
+	var wg sync.WaitGroup
 	for _, t := range TargetList {
 		if t.Key == "ya" || t.Key == "mosgorsud" {
 			continue
 		}
-		if lat, ok := testTargetURL(client, t.URL); ok {
-			targets[t.Key] = lat
-			totalLatency += lat
-		}
+		wg.Add(1)
+		go func(tr TargetResource) {
+			defer wg.Done()
+			if lat, ok := testTargetURL(client, tr.URL); ok {
+				mu.Lock()
+				targets[tr.Key] = lat
+				totalLatency += lat
+				mu.Unlock()
+			}
+		}(t)
 	}
+	wg.Wait()
 
 	if len(targets) == 0 {
 		return nil, false
@@ -98,7 +124,7 @@ func CheckCandidate(c CandidateProxy) (*ProxyResult, bool) {
 }
 
 func testTargetURL(client *http.Client, targetURL string) (int64, bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5500*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 4200*time.Millisecond)
 	defer cancel()
 
 	start := time.Now()
@@ -116,7 +142,6 @@ func testTargetURL(client *http.Client, targetURL string) (int64, bool) {
 	}
 	defer resp.Body.Close()
 
-	// Читаем первые 256 байт, чтобы убедиться что соединение реально отдает данные
 	_, _ = io.CopyN(io.Discard, resp.Body, 256)
 	elapsed := time.Since(start).Milliseconds()
 	if elapsed == 0 {
@@ -141,8 +166,8 @@ func buildProxyHTTPClient(proxyAddr, proto string, timeout time.Duration) (*http
 				return dialSOCKS5(ctx, proxyAddr, addr)
 			},
 			TLSClientConfig:       tlsConfig,
-			TLSHandshakeTimeout:   4 * time.Second,
-			ResponseHeaderTimeout: 4 * time.Second,
+			TLSHandshakeTimeout:   3500 * time.Millisecond,
+			ResponseHeaderTimeout: 3500 * time.Millisecond,
 			DisableKeepAlives:     true,
 		}
 		return &http.Client{
@@ -159,8 +184,8 @@ func buildProxyHTTPClient(proxyAddr, proto string, timeout time.Duration) (*http
 	transport := &http.Transport{
 		Proxy:                 http.ProxyURL(proxyURL),
 		TLSClientConfig:       tlsConfig,
-		TLSHandshakeTimeout:   4 * time.Second,
-		ResponseHeaderTimeout: 4 * time.Second,
+		TLSHandshakeTimeout:   3500 * time.Millisecond,
+		ResponseHeaderTimeout: 3500 * time.Millisecond,
 		DisableKeepAlives:     true,
 	}
 
@@ -180,7 +205,7 @@ func dialSOCKS5(ctx context.Context, proxyAddr, targetAddr string) (net.Conn, er
 
 	deadline, ok := ctx.Deadline()
 	if !ok {
-		deadline = time.Now().Add(5 * time.Second)
+		deadline = time.Now().Add(4 * time.Second)
 	}
 	_ = conn.SetDeadline(deadline)
 

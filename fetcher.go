@@ -69,20 +69,6 @@ var defaultSources = []proxySource{
 		Country:  "MIX",
 		Type:     "spys",
 	},
-	{
-		Name:     "Monosans-Geo-HTTP",
-		URL:      "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies_geolocation/http.txt",
-		Protocol: "http",
-		Country:  "MIX",
-		Type:     "monosans_geo",
-	},
-	{
-		Name:     "Monosans-Geo-SOCKS5",
-		URL:      "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies_geolocation/socks5.txt",
-		Protocol: "socks5",
-		Country:  "MIX",
-		Type:     "monosans_geo",
-	},
 	// Крупные глобальные пулы (несколько тысяч адресов)
 	{
 		Name:     "Monosans-HTTP",
