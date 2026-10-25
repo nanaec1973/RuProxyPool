@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -16,10 +17,98 @@ import (
 	"time"
 )
 
-// CheckCandidate проверяет один прокси-сервер:
+type geoInfo struct {
+	CountryCode string
+	City        string
+	Region      string
+	ISP         string
+}
+
+var geoCache sync.Map // ip -> geoInfo
+
+// lookupRussianCity определяет город РФ, регион и провайдера по IP (на русском языке) с кэшированием
+func lookupRussianCity(ip string) (geoInfo, bool) {
+	if cached, ok := geoCache.Load(ip); ok {
+		info := cached.(geoInfo)
+		return info, info.CountryCode == "RU"
+	}
+
+	client := &http.Client{Timeout: 3500 * time.Millisecond}
+
+	// Попытка 1: ip-api.com с локализацией lang=ru
+	apiURL := fmt.Sprintf("http://ip-api.com/json/%s?lang=ru&fields=status,countryCode,regionName,city,isp", ip)
+	if resp, err := client.Get(apiURL); err == nil {
+		var data struct {
+			Status      string `json:"status"`
+			CountryCode string `json:"countryCode"`
+			RegionName  string `json:"regionName"`
+			City        string `json:"city"`
+			ISP         string `json:"isp"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&data); err == nil && data.Status == "success" {
+			_ = resp.Body.Close()
+			info := geoInfo{
+				CountryCode: data.CountryCode,
+				City:        data.City,
+				Region:      data.RegionName,
+				ISP:         data.ISP,
+			}
+			if info.City == "" {
+				info.City = data.RegionName
+			}
+			if info.City == "" {
+				info.City = "Россия"
+			}
+			geoCache.Store(ip, info)
+			return info, info.CountryCode == "RU"
+		}
+		_ = resp.Body.Close()
+	}
+
+	// Попытка 2 (резервный источник): ipwho.is с локализацией lang=ru
+	backupURL := fmt.Sprintf("https://ipwho.is/%s?lang=ru", ip)
+	if resp, err := client.Get(backupURL); err == nil {
+		var data struct {
+			Success     bool   `json:"success"`
+			CountryCode string `json:"country_code"`
+			Region      string `json:"region"`
+			City        string `json:"city"`
+			Connection  struct {
+				ISP string `json:"isp"`
+			} `json:"connection"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&data); err == nil && data.Success {
+			_ = resp.Body.Close()
+			info := geoInfo{
+				CountryCode: data.CountryCode,
+				City:        data.City,
+				Region:      data.Region,
+				ISP:         data.Connection.ISP,
+			}
+			if info.City == "" {
+				info.City = data.Region
+			}
+			if info.City == "" {
+				info.City = "Россия"
+			}
+			geoCache.Store(ip, info)
+			return info, info.CountryCode == "RU"
+		}
+		_ = resp.Body.Close()
+	}
+
+	// Если оба гео-API превысили лимит, доверяем проверке RIPE RU CIDR
+	fallback := geoInfo{
+		CountryCode: "RU",
+		City:        "Россия (RIPE RU)",
+	}
+	return fallback, true
+}
+
+// CheckCandidate проверяет один российский прокси-сервер:
 // 1. Быстрый TCP-пингователь (отсекает мертвые узлы за 1.8 сек).
 // 2. Пробный запрос к Яндексу / Мосгорсуду через прокси.
-// 3. При успехе — параллельная проверка доступности всех ключевых ресурсов РФ за 4 сек.
+// 3. При успехе — параллельная проверка доступности всех ключевых ресурсов РФ + определение города РФ.
 func CheckCandidate(c CandidateProxy) (*ProxyResult, bool) {
 	// Шаг 1: Быстрый TCP-коннект
 	tcpStart := time.Now()
@@ -107,10 +196,20 @@ func CheckCandidate(c CandidateProxy) (*ProxyResult, bool) {
 		return nil, false
 	}
 
+	// Шаг 4: Определяем город РФ и убеждаемся, что сервер физически находится в России
+	host, _, _ := net.SplitHostPort(c.Address)
+	geo, isStrictlyRU := lookupRussianCity(host)
+	if !isStrictlyRU {
+		return nil, false
+	}
+
 	return &ProxyResult{
 		Address:       c.Address,
 		Protocol:      c.Protocol,
 		Country:       "RU",
+		City:          geo.City,
+		Region:        geo.Region,
+		ISP:           geo.ISP,
 		Source:        c.Source,
 		TCPPingMs:     tcpPing,
 		AvgLatencyMs:  avgLat,

@@ -8,7 +8,7 @@ type TargetResource struct {
 	Name     string `json:"name"`
 	URL      string `json:"url"`
 	Icon     string `json:"icon"`
-	Priority bool   `json:"priority"` // Проверять ли на первом этапе
+	Priority bool   `json:"priority"`
 }
 
 // TargetList содержит основные российские государственные и инфраструктурные сайты
@@ -75,15 +75,18 @@ var TargetList = []TargetResource{
 type CandidateProxy struct {
 	Address  string // IP:Port
 	Protocol string // "http" или "socks5"
-	Country  string // "RU" или "MIX"
+	Country  string // "RU"
 	Source   string // Источник
 }
 
-// ProxyResult описывает проверенный рабочий сервер/прокси и его доступность к ресурсам РФ
+// ProxyResult описывает проверенный рабочий сервер РФ и его доступность к ресурсам РФ
 type ProxyResult struct {
 	Address       string           `json:"address"`        // IP:Port
 	Protocol      string           `json:"protocol"`       // "http" или "socks5"
-	Country       string           `json:"country"`        // "RU" и т.д.
+	Country       string           `json:"country"`        // "RU"
+	City          string           `json:"city"`           // Город РФ (например, "Москва", "Новосибирск")
+	Region        string           `json:"region"`         // Область / Регион РФ
+	ISP           string           `json:"isp"`            // Провайдер / Хостинг
 	Source        string           `json:"source"`         // Откуда получен
 	TCPPingMs     int64            `json:"tcp_ping_ms"`    // Быстрый TCP пинг в мс
 	AvgLatencyMs  int64            `json:"avg_latency_ms"` // Среднее время HTTP-ответа

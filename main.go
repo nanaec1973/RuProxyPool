@@ -301,6 +301,7 @@ const dashboardHTML = `<!DOCTYPE html>
       <thead>
         <tr>
           <th>Адрес (IP:Port)</th>
+          <th>📍 Город РФ / Провайдер</th>
           <th>Протокол</th>
           <th>Средний отклик</th>
           <th>Доступные ресурсы РФ (Пинг)</th>
@@ -308,7 +309,7 @@ const dashboardHTML = `<!DOCTYPE html>
         </tr>
       </thead>
       <tbody id="proxyTable">
-        <tr><td colspan="5" style="text-align:center; color:var(--muted); padding:32px;">Идет сканирование адресов, первые живые серверы появятся через несколько секунд...</td></tr>
+        <tr><td colspan="6" style="text-align:center; color:var(--muted); padding:32px;">Идет сканирование российских адресов, первые живые серверы появятся через несколько секунд...</td></tr>
       </tbody>
     </table>
   </div>
@@ -318,7 +319,7 @@ const dashboardHTML = `<!DOCTYPE html>
     <div class="code-box">
       GET /api/random?target=mosgorsud&amp;format=txt  ➔ Возвращает 1 быстрый рабочий IP:Port текстом<br>
       GET /api/proxies?target=mosgorsud&amp;format=txt ➔ Возвращает список всех рабочих IP:Port для Мосгорсуда<br>
-      GET /api/proxies?target=gosuslugi            ➔ JSON-список серверов с пингами для Госуслуг
+      GET /api/proxies?target=gosuslugi            ➔ JSON-список серверов РФ с городами и пингами для Госуслуг
     </div>
   </div>
 
@@ -351,7 +352,7 @@ async function loadAll() {
     document.getElementById('progressFill').style.width = pct + '%';
     document.getElementById('progressPercent').textContent = pct + '%';
     document.getElementById('progressText').textContent = st.scan_in_progress
-      ? '🔍 Идет многопоточное сканирование (' + st.scanned_count + ' из ' + st.total_candidates + ')...'
+      ? '🔍 Идет многопоточное сканирование серверов РФ (' + st.scanned_count + ' из ' + st.total_candidates + ')...'
       : '✅ Сканирование завершено. Авто-обновление активно.';
 
     renderFilters(st);
@@ -368,7 +369,7 @@ async function loadAll() {
 
 function renderFilters(st) {
   const bar = document.getElementById('filterBar');
-  let html = '<button class="btn ' + (currentTarget === '' ? 'active' : '') + '" onclick="setTarget(\'\')">🌐 Все живые (' + st.alive_count + ')</button>';
+  let html = '<button class="btn ' + (currentTarget === '' ? 'active' : '') + '" onclick="setTarget(\'\')">🇷🇺 Все живые РФ (' + st.alive_count + ')</button>';
   for (const t of targetsMeta) {
     const cnt = (st.by_target && st.by_target[t.key]) || 0;
     const active = currentTarget === t.key ? 'active' : '';
@@ -380,7 +381,7 @@ function renderFilters(st) {
 function renderTable(list) {
   const tbody = document.getElementById('proxyTable');
   if (!list || list.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; color:var(--muted); padding:28px;">Пока нет доступных серверов по выбранному фильтру. Подождите завершения сканирования...</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; color:var(--muted); padding:28px;">Пока нет доступных серверов по выбранному фильтру. Подождите завершения сканирования...</td></tr>';
     return;
   }
   const nameMap = {};
@@ -391,8 +392,11 @@ function renderTable(list) {
       const cls = (k === 'mosgorsud' || k === 'gosuslugi' || k === 'nalog' || k === 'cbr') ? 'tag tag-gov' : 'tag';
       return '<span class="' + cls + '">' + (nameMap[k] || k) + ': ' + lat + 'ms</span>';
     }).join('');
+    const cityStr = item.city || 'Россия';
+    const ispStr = item.isp ? '<div style="font-size:11px; color:var(--muted);">' + item.isp + '</div>' : '';
     return '<tr>' +
       '<td style="font-family:monospace; font-weight:600;">' + item.address + '</td>' +
+      '<td><div style="font-weight:600;">🇷🇺 ' + cityStr + '</div>' + ispStr + '</td>' +
       '<td><span class="tag">' + item.protocol.toUpperCase() + '</span></td>' +
       '<td>' + item.avg_latency_ms + ' ms</td>' +
       '<td>' + tags + '</td>' +

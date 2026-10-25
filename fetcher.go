@@ -389,7 +389,7 @@ func FetchAllCandidates(customList []CandidateProxy, maxTotal int) ([]CandidateP
 		}
 
 		// СТРОГИЙ ФИЛЬТР РФ: проверяем принадлежность IP к российским подсетям RIPE/IPDeny
-		isRU := c.Country == "RU" || c.Source == "Custom" || globalRUCIDRs.IsRussianIP(host)
+		isRU := globalRUCIDRs.IsRussianIP(host)
 		if !isRU {
 			mu.Lock()
 			skippedForeign++
