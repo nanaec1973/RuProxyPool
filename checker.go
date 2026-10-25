@@ -99,21 +99,18 @@ func CheckCandidate(c CandidateProxy) (*ProxyResult, bool) {
 	}
 
 	avgLat := totalLatency / int64(len(targets))
-	directGov := targets["mosgorsud"] > 0 || targets["gosuslugi"] > 0 || targets["nalog"] > 0 || targets["cbr"] > 0
+	directGov := targets["mosgorsud"] > 0 || targets["gosuslugi"] > 0 || targets["nalog"] > 0 || targets["cbr"] > 0 || targets["mos"] > 0
+	ruInfra := directGov || targets["sber"] > 0 || targets["rzd"] > 0
 
-	country := c.Country
-	if country == "" || country == "MIX" {
-		if directGov {
-			country = "RU/CIS"
-		} else {
-			country = "INT"
-		}
+	// Принимаем сервер ТОЛЬКО если он открыл хотя бы один внутрироссийский портал (а не просто Яндекс)
+	if !ruInfra {
+		return nil, false
 	}
 
 	return &ProxyResult{
 		Address:       c.Address,
 		Protocol:      c.Protocol,
-		Country:       country,
+		Country:       "RU",
 		Source:        c.Source,
 		TCPPingMs:     tcpPing,
 		AvgLatencyMs:  avgLat,

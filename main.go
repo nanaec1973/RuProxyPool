@@ -265,20 +265,24 @@ const dashboardHTML = `<!DOCTYPE html>
 
   <div class="stats-grid">
     <div class="stat-card">
-      <div class="stat-label">Кандидатов в пуле</div>
-      <div class="stat-val" id="stTotal">0</div>
+      <div class="stat-label">Проанализировано (31 база)</div>
+      <div class="stat-val" id="stRaw">0</div>
     </div>
     <div class="stat-card">
-      <div class="stat-label">Проверено адресов</div>
+      <div class="stat-label">Отсеяно иностранных (не РФ)</div>
+      <div class="stat-val" style="color: #f87171;" id="stForeign">0</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Отобрано серверов РФ (RU)</div>
+      <div class="stat-val" style="color: #fbbf24;" id="stTotal">0</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Проверено RU-серверов</div>
       <div class="stat-val" id="stScanned">0</div>
     </div>
     <div class="stat-card">
-      <div class="stat-label">Живых серверов</div>
+      <div class="stat-label">Живых серверов РФ 🇷🇺</div>
       <div class="stat-val" style="color: var(--green);" id="stAlive">0</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-label">Доступ к Госресурсам / Судам</div>
-      <div class="stat-val" style="color: #60a5fa;" id="stGov">0</div>
     </div>
   </div>
 
@@ -337,10 +341,11 @@ async function loadAll() {
     const st = await stRes.json();
     targetsMeta = st.targets_meta || [];
 
-    document.getElementById('stTotal').textContent = st.total_candidates;
-    document.getElementById('stScanned').textContent = st.scanned_count;
+    document.getElementById('stRaw').textContent = (st.raw_analyzed || 0).toLocaleString('ru-RU');
+    document.getElementById('stForeign').textContent = (st.foreign_filtered || 0).toLocaleString('ru-RU');
+    document.getElementById('stTotal').textContent = (st.total_candidates || 0).toLocaleString('ru-RU');
+    document.getElementById('stScanned').textContent = (st.scanned_count || 0).toLocaleString('ru-RU');
     document.getElementById('stAlive').textContent = st.alive_count;
-    document.getElementById('stGov').textContent = st.direct_gov_count;
 
     const pct = st.total_candidates > 0 ? Math.min(100, Math.round((st.scanned_count / st.total_candidates) * 100)) : 0;
     document.getElementById('progressFill').style.width = pct + '%';

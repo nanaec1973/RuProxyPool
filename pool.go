@@ -11,6 +11,8 @@ import (
 
 // PoolStats хранит сводную статистику сканера для API и веб-дашборда
 type PoolStats struct {
+	RawAnalyzed     int              `json:"raw_analyzed"`
+	ForeignFiltered int              `json:"foreign_filtered"`
 	TotalCandidates int              `json:"total_candidates"`
 	ScannedCount    int              `json:"scanned_count"`
 	AliveCount      int              `json:"alive_count"`
@@ -27,6 +29,8 @@ type ProxyPool struct {
 	mu              sync.RWMutex
 	active          map[string]ProxyResult // ключ: protocol://ip:port
 	customList      []CandidateProxy
+	rawAnalyzed     int
+	foreignFiltered int
 	totalCandidates int
 	scannedCount    int64
 	scanInProgress  bool
@@ -79,7 +83,6 @@ func (p *ProxyPool) AddCustomCandidates(rawText string) int {
 	p.customList = append(p.customList, parsed...)
 	p.mu.Unlock()
 
-	// Сразу проверяем добавленные адреса в фоне
 	go func(items []CandidateProxy) {
 		for _, item := range items {
 			if res, ok := CheckCandidate(item); ok {
@@ -91,7 +94,7 @@ func (p *ProxyPool) AddCustomCandidates(rawText string) int {
 	return len(parsed)
 }
 
-// RunScan выполняет полный цикл сбора и многопоточной проверки нескольких тысяч адресов
+// RunScan выполняет полный цикл сбора и многопоточной проверки российских адресов
 func (p *ProxyPool) RunScan() {
 	p.mu.Lock()
 	if p.scanInProgress {
@@ -103,7 +106,6 @@ func (p *ProxyPool) RunScan() {
 	customCopy := make([]CandidateProxy, len(p.customList))
 	copy(customCopy, p.customList)
 
-	// Также перепроверяем уже известные живые серверы в первую очередь
 	for _, existing := range p.active {
 		customCopy = append(customCopy, CandidateProxy{
 			Address:  existing.Address,
@@ -114,10 +116,12 @@ func (p *ProxyPool) RunScan() {
 	}
 	p.mu.Unlock()
 
-	log.Printf("[SCANNER] Начинаем сбор адресов для сканирования...")
-	candidates := FetchAllCandidates(customCopy, p.maxCandidates)
+	log.Printf("[SCANNER] Начинаем сбор и гео-фильтрацию российских адресов...")
+	candidates, rawTotal, foreignSkipped := FetchAllCandidates(customCopy, p.maxCandidates)
 
 	p.mu.Lock()
+	p.rawAnalyzed = rawTotal
+	p.foreignFiltered = foreignSkipped
 	p.totalCandidates = len(candidates)
 	atomic.StoreInt64(&p.scannedCount, 0)
 	p.mu.Unlock()
@@ -126,7 +130,6 @@ func (p *ProxyPool) RunScan() {
 	jobs := make(chan CandidateProxy, len(candidates))
 	var wg sync.WaitGroup
 
-	// Запускаем пул горутин-воркеров
 	for w := 0; w < p.workers; w++ {
 		wg.Add(1)
 		go func() {
@@ -135,7 +138,6 @@ func (p *ProxyPool) RunScan() {
 				if res, ok := CheckCandidate(cand); ok {
 					p.upsertResult(*res)
 				} else {
-					// Если прокси раньше был в активных, но теперь не отвечает — удаляем его
 					p.removeDead(cand.Protocol + "://" + cand.Address)
 				}
 				atomic.AddInt64(&p.scannedCount, 1)
@@ -155,7 +157,7 @@ func (p *ProxyPool) RunScan() {
 	alive := len(p.active)
 	p.mu.Unlock()
 
-	log.Printf("[SCANNER] Цикл завершен за %v. Проверено: %d, Живых серверов: %d",
+	log.Printf("[SCANNER] Цикл завершен за %v. Проверено RU-серверов: %d, Живых: %d",
 		time.Since(scanStart).Round(time.Second), len(candidates), alive)
 }
 
@@ -172,7 +174,7 @@ func (p *ProxyPool) removeDead(key string) {
 	p.mu.Unlock()
 }
 
-// GetProxies возвращает отфильтрованный и отсортированный список живых серверов
+// GetProxies возвращает отфильтрованный и отсортированный список живых серверов РФ
 func (p *ProxyPool) GetProxies(targetKey, protocol string, limit int) []ProxyResult {
 	p.mu.RLock()
 	list := make([]ProxyResult, 0, len(p.active))
@@ -189,7 +191,6 @@ func (p *ProxyPool) GetProxies(targetKey, protocol string, limit int) []ProxyRes
 	}
 	p.mu.RUnlock()
 
-	// Сортируем: сначала те, что открывают целевой ресурс быстрее (или открывают больше госресурсов)
 	sort.Slice(list, func(i, j int) bool {
 		if targetKey != "" {
 			return list[i].Targets[targetKey] < list[j].Targets[targetKey]
@@ -209,7 +210,7 @@ func (p *ProxyPool) GetProxies(targetKey, protocol string, limit int) []ProxyRes
 	return list
 }
 
-// GetRandomProxy возвращает один случайный рабочий прокси (из топ-25 самых быстрых для выбранной цели)
+// GetRandomProxy возвращает один случайный рабочий прокси из топ-25 самых быстрых
 func (p *ProxyPool) GetRandomProxy(targetKey, protocol string) (*ProxyResult, bool) {
 	candidates := p.GetProxies(targetKey, protocol, 25)
 	if len(candidates) == 0 {
@@ -241,6 +242,8 @@ func (p *ProxyPool) GetStats() PoolStats {
 	}
 
 	return PoolStats{
+		RawAnalyzed:     p.rawAnalyzed,
+		ForeignFiltered: p.foreignFiltered,
 		TotalCandidates: p.totalCandidates,
 		ScannedCount:    int(atomic.LoadInt64(&p.scannedCount)),
 		AliveCount:      len(p.active),

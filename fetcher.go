@@ -17,6 +17,126 @@ import (
 
 var ipPortRegex = regexp.MustCompile(`\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d{2,5})\b`)
 
+// ruCIDRTable хранит все российские IPv4 подсети (RIPE NCC / IPDeny),
+// сгруппированные по первому октету IP для мгновенной фильтрации (за <1 микросекунду).
+type ruCIDRTable struct {
+	mu      sync.RWMutex
+	loaded  bool
+	buckets [256][]*net.IPNet
+	count   int
+}
+
+var globalRUCIDRs = &ruCIDRTable{}
+
+// EnsureLoaded загружает официальную базу российских IP-диапазонов (RIPE NCC + IPDeny)
+func (t *ruCIDRTable) EnsureLoaded() {
+	t.mu.RLock()
+	if t.loaded && t.count > 1000 {
+		t.mu.RUnlock()
+		return
+	}
+	t.mu.RUnlock()
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.loaded && t.count > 1000 {
+		return
+	}
+
+	client := &http.Client{Timeout: 12 * time.Second}
+	var buckets [256][]*net.IPNet
+	total := 0
+
+	addCIDR := func(cidrStr string) {
+		cidrStr = strings.TrimSpace(cidrStr)
+		if cidrStr == "" || strings.HasPrefix(cidrStr, "#") {
+			return
+		}
+		if !strings.Contains(cidrStr, "/") {
+			cidrStr += "/32"
+		}
+		_, ipNet, err := net.ParseCIDR(cidrStr)
+		if err != nil || ipNet == nil {
+			return
+		}
+		ip4 := ipNet.IP.To4()
+		if ip4 == nil {
+			return
+		}
+		firstByte := ip4[0]
+		buckets[firstByte] = append(buckets[firstByte], ipNet)
+		total++
+	}
+
+	// Источник 1: IPDeny RU Zone (~11 480 российских подсетей)
+	if resp, err := client.Get("https://www.ipdeny.com/ipblocks/data/countries/ru.zone"); err == nil {
+		if resp.StatusCode == http.StatusOK {
+			sc := bufio.NewScanner(resp.Body)
+			for sc.Scan() {
+				addCIDR(sc.Text())
+			}
+		}
+		_ = resp.Body.Close()
+	}
+
+	// Источник 2 (резервный / дополнительный): Официальный реестр RIPE NCC по стране RU
+	if total < 1000 {
+		if resp, err := client.Get("https://stat.ripe.net/data/country-resource-list/data.json?resource=ru"); err == nil {
+			if resp.StatusCode == http.StatusOK {
+				var ripeData struct {
+					Data struct {
+						Resources struct {
+							IPv4 []string `json:"ipv4"`
+						} `json:"resources"`
+					} `json:"data"`
+				}
+				if err := json.NewDecoder(resp.Body).Decode(&ripeData); err == nil {
+					for _, rng := range ripeData.Data.Resources.IPv4 {
+						if strings.Contains(rng, "/") {
+							addCIDR(rng)
+						}
+					}
+				}
+			}
+			_ = resp.Body.Close()
+		}
+	}
+
+	if total > 0 {
+		t.buckets = buckets
+		t.count = total
+		t.loaded = true
+		log.Printf("[GEO-RU] Загружено %d российских IPv4-подсетей (RIPE/IPDeny) для строгой фильтрации РФ", total)
+	}
+}
+
+// IsRussianIP проверяет, принадлежит ли IPv4-адрес российскому пулу адресов
+func (t *ruCIDRTable) IsRussianIP(host string) bool {
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	ip4 := ip.To4()
+	if ip4 == nil {
+		return false
+	}
+
+	t.mu.RLock()
+	loaded := t.loaded
+	bucket := t.buckets[ip4[0]]
+	t.mu.RUnlock()
+
+	if !loaded {
+		return false
+	}
+	for _, netBlock := range bucket {
+		if netBlock.Contains(ip4) {
+			return true
+		}
+	}
+	return false
+}
+
 type proxySource struct {
 	Name     string
 	URL      string
@@ -26,7 +146,7 @@ type proxySource struct {
 }
 
 var defaultSources = []proxySource{
-	// 1. Приоритетные RU-источники
+	// 1. Прямые RU-источники
 	{
 		Name:     "Proxifly-RU",
 		URL:      "https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/countries/RU/data.txt",
@@ -49,7 +169,7 @@ var defaultSources = []proxySource{
 		Type:     "raw",
 	},
 	{
-		Name:     "GeoNode-RU",
+		Name:     "GeoNode-RU-Page1",
 		URL:      "https://proxylist.geonode.com/api/proxy-list?country=RU&limit=500&page=1&sort_by=lastChecked&sort_type=desc",
 		Protocol: "auto",
 		Country:  "RU",
@@ -70,7 +190,7 @@ var defaultSources = []proxySource{
 		Type:     "spys",
 	},
 
-	// 2. Все 16 крупных мировых источников из proxy_checker.go (~20 000+ адресов)
+	// 2. Крупные мировые базы (~150 000+ адресов), из которых фильтр RIPE/RU вырезает ТОЛЬКО российские IP!
 	{
 		Name:     "OpenProxyList-SOCKS5",
 		URL:      "https://raw.githubusercontent.com/roosterkid/openproxylist/main/SOCKS5_RAW.txt",
@@ -170,6 +290,62 @@ var defaultSources = []proxySource{
 		Type:     "raw",
 	},
 	{
+		Name:     "Prxchk-SOCKS5",
+		URL:      "https://raw.githubusercontent.com/prxchk/proxy-list/main/socks5.txt",
+		Protocol: "socks5",
+		Country:  "MIX",
+		Type:     "raw",
+	},
+	{
+		Name:     "Prxchk-HTTP",
+		URL:      "https://raw.githubusercontent.com/prxchk/proxy-list/main/http.txt",
+		Protocol: "http",
+		Country:  "MIX",
+		Type:     "raw",
+	},
+	{
+		Name:     "Yakumo-SOCKS5",
+		URL:      "https://raw.githubusercontent.com/elliottophellia/yakumo/master/results/socks5/global/socks5_checked.txt",
+		Protocol: "socks5",
+		Country:  "MIX",
+		Type:     "raw",
+	},
+	{
+		Name:     "Yakumo-HTTP",
+		URL:      "https://raw.githubusercontent.com/elliottophellia/yakumo/master/results/http/global/http_checked.txt",
+		Protocol: "http",
+		Country:  "MIX",
+		Type:     "raw",
+	},
+	{
+		Name:     "Mmpx12-SOCKS5",
+		URL:      "https://raw.githubusercontent.com/mmpx12/proxy-list/master/socks5.txt",
+		Protocol: "socks5",
+		Country:  "MIX",
+		Type:     "raw",
+	},
+	{
+		Name:     "Mmpx12-HTTP",
+		URL:      "https://raw.githubusercontent.com/mmpx12/proxy-list/master/http.txt",
+		Protocol: "http",
+		Country:  "MIX",
+		Type:     "raw",
+	},
+	{
+		Name:     "Rdavydov-SOCKS5",
+		URL:      "https://raw.githubusercontent.com/rdavydov/proxy-list/main/proxies/socks5.txt",
+		Protocol: "socks5",
+		Country:  "MIX",
+		Type:     "raw",
+	},
+	{
+		Name:     "Rdavydov-HTTP",
+		URL:      "https://raw.githubusercontent.com/rdavydov/proxy-list/main/proxies/http.txt",
+		Protocol: "http",
+		Country:  "MIX",
+		Type:     "raw",
+	},
+	{
 		Name:     "ProxyScrape-Global-SOCKS5",
 		URL:      "https://api.proxyscrape.com/v2/?request=getproxies&protocol=socks5&timeout=5000",
 		Protocol: "socks5",
@@ -192,38 +368,59 @@ var defaultSources = []proxySource{
 	},
 }
 
-// FetchAllCandidates параллельно собирает ~20 000+ адресов из всех источников,
-// ставя в начало очереди российские (RU) и ранее проверенные серверы.
-func FetchAllCandidates(customList []CandidateProxy, maxTotal int) []CandidateProxy {
+// FetchAllCandidates скачивает ~270 000+ адресов из 31 источника и оставляет
+// СТРОГО ТОЛЬКО РОССИЙСКИЕ (RU) серверы (по базе подсетей RIPE NCC / IPDeny).
+func FetchAllCandidates(customList []CandidateProxy, maxTotal int) ([]CandidateProxy, int, int) {
+	globalRUCIDRs.EnsureLoaded()
+
 	var (
-		mu         sync.Mutex
-		seen       = make(map[string]bool)
-		ruProxies  []CandidateProxy
-		mixProxies []CandidateProxy
+		mu             sync.Mutex
+		seen           = make(map[string]bool)
+		ruProxies      []CandidateProxy
+		rawTotalLoaded int
+		skippedForeign int
 	)
 
 	addCandidate := func(c CandidateProxy) {
 		addr := strings.TrimSpace(c.Address)
-		if !isValidIPPort(addr) {
+		host, port, err := net.SplitHostPort(addr)
+		if err != nil || host == "" || port == "" || net.ParseIP(host) == nil {
 			return
 		}
-		if c.Protocol == "" || c.Protocol == "auto" {
-			c.Protocol = "socks5"
+
+		// СТРОГИЙ ФИЛЬТР РФ: проверяем принадлежность IP к российским подсетям RIPE/IPDeny
+		isRU := c.Country == "RU" || c.Source == "Custom" || globalRUCIDRs.IsRussianIP(host)
+		if !isRU {
+			mu.Lock()
+			skippedForeign++
+			mu.Unlock()
+			return
 		}
-		key := c.Protocol + "://" + addr
+
+		c.Country = "RU"
+		c.Address = addr
+
+		// Определяем протоколы для проверки этого российского сервера
+		var protos []string
+		switch c.Protocol {
+		case "socks5":
+			protos = []string{"socks5", "http"}
+		case "http":
+			protos = []string{"http", "socks5"}
+		default:
+			protos = []string{"socks5", "http"}
+		}
 
 		mu.Lock()
 		defer mu.Unlock()
-		if seen[key] {
-			return
-		}
-		seen[key] = true
-		c.Address = addr
-
-		if c.Country == "RU" || c.Source == "Custom" {
-			ruProxies = append(ruProxies, c)
-		} else {
-			mixProxies = append(mixProxies, c)
+		for _, p := range protos {
+			key := p + "://" + addr
+			if !seen[key] {
+				seen[key] = true
+				itemCopy := c
+				itemCopy.Protocol = p
+				ruProxies = append(ruProxies, itemCopy)
+			}
 		}
 	}
 
@@ -250,32 +447,20 @@ func FetchAllCandidates(customList []CandidateProxy, maxTotal int) []CandidatePr
 
 	wg.Wait()
 
-	// Объединяем строго в порядке приоритета источников
 	for _, items := range resultsBySource {
+		rawTotalLoaded += len(items)
 		for _, item := range items {
 			addCandidate(item)
 		}
 	}
 
-	result := make([]CandidateProxy, 0, len(ruProxies)+len(mixProxies))
-	result = append(result, ruProxies...)
-
-	if maxTotal <= 0 {
-		result = append(result, mixProxies...)
-	} else {
-		remaining := maxTotal - len(result)
-		if remaining > 0 {
-			if len(mixProxies) > remaining {
-				result = append(result, mixProxies[:remaining]...)
-			} else {
-				result = append(result, mixProxies...)
-			}
-		}
+	if maxTotal > 0 && len(ruProxies) > maxTotal {
+		ruProxies = ruProxies[:maxTotal]
 	}
 
-	log.Printf("[FETCHER] Собрано уникальных серверов из %d источников: %d (Приоритетных RU: %d, Глобальных: %d)",
-		len(defaultSources), len(result), len(ruProxies), len(result)-len(ruProxies))
-	return result
+	log.Printf("[FETCHER] Проанализировано мировых списков: %d адресов | Отсеяно иностранных: %d | ОСТАВЛЕНО ЧИСТЫХ RU-КАНДИДАТОВ: %d",
+		rawTotalLoaded, skippedForeign, len(ruProxies))
+	return ruProxies, rawTotalLoaded, skippedForeign
 }
 
 func fetchFromSource(client *http.Client, s proxySource) ([]CandidateProxy, error) {
@@ -298,7 +483,7 @@ func fetchFromSource(client *http.Client, s proxySource) ([]CandidateProxy, erro
 		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 
-	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024)) // До 10 МБ
+	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
 	if err != nil {
 		return nil, err
 	}
@@ -363,8 +548,10 @@ func parseSpysTxt(body, proto, sourceName string) []CandidateProxy {
 		parts := strings.Fields(line)
 		if len(parts) >= 2 && len(parts[1]) >= 2 {
 			cc := parts[1][:2]
-			if cc == "RU" || cc == "BY" || cc == "KZ" {
-				country = cc
+			if cc == "RU" {
+				country = "RU"
+			} else {
+				continue // В Spys.me сразу пропускаем не-RU строки
 			}
 		}
 		out = append(out, CandidateProxy{
@@ -404,14 +591,10 @@ func parseGeoNodeJSON(body, sourceName string) ([]CandidateProxy, error) {
 				break
 			}
 		}
-		country := item.Country
-		if country == "" {
-			country = "RU"
-		}
 		out = append(out, CandidateProxy{
 			Address:  fmt.Sprintf("%s:%s", item.IP, item.Port),
 			Protocol: proto,
-			Country:  country,
+			Country:  "RU",
 			Source:   sourceName,
 		})
 	}
