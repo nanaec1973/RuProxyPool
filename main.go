@@ -254,7 +254,7 @@ const dashboardHTML = `<!DOCTYPE html>
     <div>
       <h1>🛡️ RuProxyPool <span id="scanBadge" class="badge-live">Активен</span></h1>
       <div style="color: var(--muted); font-size: 14px; margin-top: 4px;">
-        Автоматический сканер доступных прокси-серверов для работы с ресурсами РФ (Мосгорсуд, Госуслуги, ЦБ РФ, ФНС, Сбер)
+        Проверка сайтов РФ и фактического российского выхода прокси. Работа VPN и доступность в мобильной сети проверяются отдельно.
       </div>
     </div>
     <div style="display: flex; gap: 10px;">
@@ -301,7 +301,7 @@ const dashboardHTML = `<!DOCTYPE html>
       <thead>
         <tr>
           <th>Адрес (IP:Port)</th>
-          <th>📍 Город РФ / Провайдер</th>
+          <th>📍 Выход / Город / Провайдер</th>
           <th>Протокол</th>
           <th>Средний отклик</th>
           <th>Доступные ресурсы РФ (Пинг)</th>
@@ -392,17 +392,25 @@ function renderTable(list) {
       const cls = (k === 'mosgorsud' || k === 'gosuslugi' || k === 'nalog' || k === 'cbr') ? 'tag tag-gov' : 'tag';
       return '<span class="' + cls + '">' + (nameMap[k] || k) + ': ' + lat + 'ms</span>';
     }).join('');
-    const cityStr = item.city || 'Россия';
-    const ispStr = item.isp ? '<div style="font-size:11px; color:var(--muted);">' + item.isp + '</div>' : '';
+    const cityStr = escapeHTML(item.city || item.region || 'RU по геобазе');
+    const ispStr = item.isp ? '<div style="font-size:11px; color:var(--muted);">' + escapeHTML(item.isp) + '</div>' : '';
+    const checked = item.exit_checked_at ? new Date(item.exit_checked_at).toLocaleString() : '';
+    const exitStr = item.exit_verified ? '<div style="font-size:11px; color:var(--muted);" title="' + escapeHTML(checked) + '">Выход: ' + escapeHTML(item.exit_ip) + '</div>' : '';
     return '<tr>' +
       '<td style="font-family:monospace; font-weight:600;">' + item.address + '</td>' +
-      '<td><div style="font-weight:600;">🇷🇺 ' + cityStr + '</div>' + ispStr + '</td>' +
+      '<td><div style="font-weight:600;">🇷🇺 ' + cityStr + '</div>' + exitStr + ispStr + '</td>' +
       '<td><span class="tag">' + item.protocol.toUpperCase() + '</span></td>' +
       '<td>' + item.avg_latency_ms + ' ms</td>' +
       '<td>' + tags + '</td>' +
       '<td><button class="btn" onclick="navigator.clipboard.writeText(\'' + item.address + '\')">Копировать</button></td>' +
     '</tr>';
   }).join('');
+}
+
+function escapeHTML(value) {
+  const element = document.createElement('span');
+  element.textContent = String(value);
+  return element.innerHTML.replace(/"/g, '&quot;');
 }
 
 function setTarget(t) {

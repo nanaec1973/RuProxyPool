@@ -79,11 +79,15 @@ type CandidateProxy struct {
 	Source   string // Источник
 }
 
-// ProxyResult описывает проверенный рабочий сервер РФ и его доступность к ресурсам РФ
+// ProxyResult описывает проверку сайтов и геобазы фактического выхода прокси.
+// Она не подтверждает VPN, передачу больших файлов или доступность у мобильного оператора.
 type ProxyResult struct {
-	Address       string           `json:"address"`        // IP:Port
-	Protocol      string           `json:"protocol"`       // "http" или "socks5"
-	Country       string           `json:"country"`        // "RU"
+	Address       string           `json:"address"`  // IP:Port
+	Protocol      string           `json:"protocol"` // "http" или "socks5"
+	Country       string           `json:"country"`  // Страна фактического выхода
+	ExitIP        string           `json:"exit_ip"`
+	ExitVerified  bool             `json:"exit_verified"`
+	ExitCheckedAt time.Time        `json:"exit_checked_at"`
 	City          string           `json:"city"`           // Город РФ (например, "Москва", "Новосибирск")
 	Region        string           `json:"region"`         // Область / Регион РФ
 	ISP           string           `json:"isp"`            // Провайдер / Хостинг
