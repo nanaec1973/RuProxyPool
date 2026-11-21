@@ -3,3 +3,5 @@
 ru-proxy-pool
 RuProxyPool
 .env
+data/
+*.tmp

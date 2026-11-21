@@ -3,114 +3,143 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/binary"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
-type geoInfo struct {
-	CountryCode string
-	City        string
-	Region      string
-	ISP         string
+// Checker проверяет прокси-кандидатов. Все HTTPS-запросы идут с ПОЛНОЙ проверкой
+// сертификатов: прокси, который подменяет сертификат или вмешивается в трафик (MITM),
+// не проходит проверку и не попадает в пул.
+type Checker struct {
+	roots      *x509.CertPool
+	ownIP      atomic.Value // string: наш внешний IP (чтобы отсеять «прозрачные» прокси)
+	checkIPURL string
 }
 
-var geoCache sync.Map // ip -> geoInfo
-
-// lookupRussianCity определяет город РФ, регион и провайдера по IP (на русском языке) с кэшированием
-func lookupRussianCity(ip string) (geoInfo, bool) {
-	if cached, ok := geoCache.Load(ip); ok {
-		info := cached.(geoInfo)
-		return info, info.CountryCode == "RU"
+func NewChecker(certsDir, checkIPURL string) *Checker {
+	c := &Checker{roots: loadRootCAs(certsDir), checkIPURL: checkIPURL}
+	c.ownIP.Store("")
+	if checkIPURL != "" {
+		go func() { // в фоне, чтобы не задерживать запуск HTTP-сервера
+			ip := c.detectOwnIP()
+			if ip == "" {
+				log.Printf("[CHECKER] Не удалось определить собственный внешний IP — проверка на прозрачные прокси ограничена")
+				return
+			}
+			c.ownIP.Store(ip)
+		}()
 	}
-
-	client := &http.Client{Timeout: 3500 * time.Millisecond}
-
-	// Попытка 1: ip-api.com с локализацией lang=ru
-	apiURL := fmt.Sprintf("http://ip-api.com/json/%s?lang=ru&fields=status,countryCode,regionName,city,isp", ip)
-	if resp, err := client.Get(apiURL); err == nil {
-		var data struct {
-			Status      string `json:"status"`
-			CountryCode string `json:"countryCode"`
-			RegionName  string `json:"regionName"`
-			City        string `json:"city"`
-			ISP         string `json:"isp"`
-		}
-		if err := json.NewDecoder(resp.Body).Decode(&data); err == nil && data.Status == "success" {
-			_ = resp.Body.Close()
-			info := geoInfo{
-				CountryCode: data.CountryCode,
-				City:        data.City,
-				Region:      data.RegionName,
-				ISP:         data.ISP,
-			}
-			if info.City == "" {
-				info.City = data.RegionName
-			}
-			if info.City == "" {
-				info.City = "Россия"
-			}
-			geoCache.Store(ip, info)
-			return info, info.CountryCode == "RU"
-		}
-		_ = resp.Body.Close()
-	}
-
-	// Попытка 2 (резервный источник): ipwho.is с локализацией lang=ru
-	backupURL := fmt.Sprintf("https://ipwho.is/%s?lang=ru", ip)
-	if resp, err := client.Get(backupURL); err == nil {
-		var data struct {
-			Success     bool   `json:"success"`
-			CountryCode string `json:"country_code"`
-			Region      string `json:"region"`
-			City        string `json:"city"`
-			Connection  struct {
-				ISP string `json:"isp"`
-			} `json:"connection"`
-		}
-		if err := json.NewDecoder(resp.Body).Decode(&data); err == nil && data.Success {
-			_ = resp.Body.Close()
-			info := geoInfo{
-				CountryCode: data.CountryCode,
-				City:        data.City,
-				Region:      data.Region,
-				ISP:         data.Connection.ISP,
-			}
-			if info.City == "" {
-				info.City = data.Region
-			}
-			if info.City == "" {
-				info.City = "Россия"
-			}
-			geoCache.Store(ip, info)
-			return info, info.CountryCode == "RU"
-		}
-		_ = resp.Body.Close()
-	}
-
-	// Если оба гео-API превысили лимит, доверяем проверке RIPE RU CIDR
-	fallback := geoInfo{
-		CountryCode: "RU",
-		City:        "Россия (RIPE RU)",
-	}
-	return fallback, true
+	return c
 }
 
-// CheckCandidate проверяет один российский прокси-сервер:
-// 1. Быстрый TCP-пингователь (отсекает мертвые узлы за 1.8 сек).
-// 2. Пробный запрос к Яндексу / Мосгорсуду через прокси.
-// 3. При успехе — параллельная проверка доступности всех ключевых ресурсов РФ + определение города РФ.
-func CheckCandidate(c CandidateProxy) (*ProxyResult, bool) {
-	// Шаг 1: Быстрый TCP-коннект
+// loadRootCAs берёт системные корневые сертификаты и добавляет к ним файлы *.pem / *.crt
+// из certsDir (например, Russian Trusted Root CA от Минцифры, которым подписаны
+// сертификаты части российских сайтов).
+func loadRootCAs(dir string) *x509.CertPool {
+	pool, err := x509.SystemCertPool()
+	if err != nil || pool == nil {
+		pool = x509.NewCertPool()
+	}
+	if dir == "" {
+		return pool
+	}
+	files, _ := filepath.Glob(filepath.Join(dir, "*"))
+	added := 0
+	for _, f := range files {
+		ext := strings.ToLower(filepath.Ext(f))
+		if ext != ".pem" && ext != ".crt" {
+			continue
+		}
+		data, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		if pool.AppendCertsFromPEM(data) {
+			added++
+			log.Printf("[CHECKER] Добавлен корневой сертификат: %s", filepath.Base(f))
+		} else {
+			log.Printf("[CHECKER] ⚠️  Файл %s не похож на PEM-сертификат, пропущен", filepath.Base(f))
+		}
+	}
+	if added == 0 {
+		log.Printf("[CHECKER] Дополнительных корневых сертификатов нет (%s) — используются только системные", dir)
+	}
+	return pool
+}
+
+func (c *Checker) tlsConfig() *tls.Config {
+	return &tls.Config{RootCAs: c.roots, MinVersion: tls.VersionTLS12}
+}
+
+func (c *Checker) detectOwnIP() string {
+	client := &http.Client{Timeout: 6 * time.Second, Transport: &http.Transport{TLSClientConfig: c.tlsConfig()}}
+	for i := 0; i < 3; i++ {
+		if ip := fetchIP(client, c.checkIPURL); ip != "" {
+			return ip
+		}
+		time.Sleep(time.Second)
+	}
+	return ""
+}
+
+func fetchIP(client *http.Client, u string) string {
+	resp, err := client.Get(u)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return ""
+	}
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, 64))
+	ip := net.ParseIP(strings.TrimSpace(string(b)))
+	if ip == nil {
+		return ""
+	}
+	return ip.String()
+}
+
+// expandProtocols превращает кандидата с неизвестным протоколом в два (http и socks5).
+// Если протокол известен — проверяем только его: это вдвое ускоряет сканирование.
+func expandProtocols(c CandidateProxy) []CandidateProxy {
+	switch c.Protocol {
+	case "http", "socks5":
+		return []CandidateProxy{c}
+	default:
+		a, b := c, c
+		a.Protocol, b.Protocol = "socks5", "http"
+		return []CandidateProxy{a, b}
+	}
+}
+
+// CheckCandidate проверяет один прокси-сервер:
+//  1. Быстрый TCP-коннект (отсекает мёртвые узлы за 1.8 сек).
+//  2. Пробный HTTPS-запрос к Яндексу и Мосгорсуду (с проверкой сертификата и содержимого).
+//  3. Параллельная проверка остальных ресурсов РФ + определение реального IP выхода.
+//  4. Прокси принимается, только если он открыл хотя бы один внутрироссийский портал
+//     и реально выходит в интернет с российского IP.
+func (ch *Checker) CheckCandidate(c CandidateProxy) (*ProxyResult, bool) {
+	if c.Protocol != "http" && c.Protocol != "socks5" {
+		return nil, false
+	}
+	if !isAllowedProxyAddr(c.Address) {
+		return nil, false
+	}
+
 	tcpStart := time.Now()
 	conn, err := net.DialTimeout("tcp", c.Address, 1800*time.Millisecond)
 	if err != nil {
@@ -122,29 +151,22 @@ func CheckCandidate(c CandidateProxy) (*ProxyResult, bool) {
 		tcpPing = 1
 	}
 
-	// Шаг 2: Создаем HTTP-клиент через прокси (HTTP или SOCKS5)
-	client, err := buildProxyHTTPClient(c.Address, c.Protocol, 4500*time.Millisecond)
+	client, err := ch.buildProxyHTTPClient(c.Address, c.Protocol, 6*time.Second)
 	if err != nil {
 		return nil, false
 	}
 
-	// Быстрая первичная проверка: пропускает ли прокси трафик к РФ (Яндекс или Мосгорсуд параллельно)
+	ya, _ := targetByKey("ya")
+	mgs, _ := targetByKey("mosgorsud")
 	var (
 		yaLat, mgsLat int64
 		yaOK, mgsOK   bool
 		probeWg       sync.WaitGroup
 	)
 	probeWg.Add(2)
-	go func() {
-		defer probeWg.Done()
-		yaLat, yaOK = testTargetURL(client, "https://ya.ru")
-	}()
-	go func() {
-		defer probeWg.Done()
-		mgsLat, mgsOK = testTargetURL(client, "https://mos-gorsud.ru")
-	}()
+	go func() { defer probeWg.Done(); yaLat, yaOK = testTarget(client, ya) }()
+	go func() { defer probeWg.Done(); mgsLat, mgsOK = testTarget(client, mgs) }()
 	probeWg.Wait()
-
 	if !yaOK && !mgsOK {
 		return nil, false
 	}
@@ -153,8 +175,9 @@ func CheckCandidate(c CandidateProxy) (*ProxyResult, bool) {
 		mu           sync.Mutex
 		targets      = make(map[string]int64)
 		totalLatency int64
+		exitIP       string
+		wg           sync.WaitGroup
 	)
-
 	if yaOK {
 		targets["ya"] = yaLat
 		totalLatency += yaLat
@@ -164,8 +187,6 @@ func CheckCandidate(c CandidateProxy) (*ProxyResult, bool) {
 		totalLatency += mgsLat
 	}
 
-	// Шаг 3: Параллельно проверяем остальные ключевые российские сайты
-	var wg sync.WaitGroup
 	for _, t := range TargetList {
 		if t.Key == "ya" || t.Key == "mosgorsud" {
 			continue
@@ -173,7 +194,7 @@ func CheckCandidate(c CandidateProxy) (*ProxyResult, bool) {
 		wg.Add(1)
 		go func(tr TargetResource) {
 			defer wg.Done()
-			if lat, ok := testTargetURL(client, tr.URL); ok {
+			if lat, ok := testTarget(client, tr); ok {
 				mu.Lock()
 				targets[tr.Key] = lat
 				totalLatency += lat
@@ -181,25 +202,31 @@ func CheckCandidate(c CandidateProxy) (*ProxyResult, bool) {
 			}
 		}(t)
 	}
+	if ch.checkIPURL != "" {
+		wg.Add(1)
+		go func() { defer wg.Done(); exitIP = fetchIP(client, ch.checkIPURL) }()
+	}
 	wg.Wait()
 
-	if len(targets) == 0 {
-		return nil, false
-	}
-
-	avgLat := totalLatency / int64(len(targets))
-	directGov := targets["mosgorsud"] > 0 || targets["gosuslugi"] > 0 || targets["nalog"] > 0 || targets["cbr"] > 0 || targets["mos"] > 0
+	directGov := targets["mosgorsud"] > 0 || targets["gosuslugi"] > 0 || targets["nalog"] > 0 ||
+		targets["cbr"] > 0 || targets["mos"] > 0
 	ruInfra := directGov || targets["sber"] > 0 || targets["rzd"] > 0
-
-	// Принимаем сервер ТОЛЬКО если он открыл хотя бы один внутрироссийский портал (а не просто Яндекс)
 	if !ruInfra {
 		return nil, false
 	}
 
-	// Шаг 4: Определяем город РФ и убеждаемся, что сервер физически находится в России
+	// Прозрачный прокси: сайты видят наш собственный IP — такой прокси бесполезен.
+	if own, _ := ch.ownIP.Load().(string); exitIP != "" && own != "" && exitIP == own {
+		return nil, false
+	}
+	// Страну определяем по IP ВЫХОДА (он может отличаться от адреса входа),
+	// а если его узнать не удалось — по адресу входа. Только по таблице RIPE/IPDeny.
 	host, _, _ := net.SplitHostPort(c.Address)
-	geo, isStrictlyRU := lookupRussianCity(host)
-	if !isStrictlyRU {
+	geoIP := host
+	if exitIP != "" {
+		geoIP = exitIP
+	}
+	if !globalRUCIDRs.IsRussianIP(geoIP) {
 		return nil, false
 	}
 
@@ -207,12 +234,10 @@ func CheckCandidate(c CandidateProxy) (*ProxyResult, bool) {
 		Address:       c.Address,
 		Protocol:      c.Protocol,
 		Country:       "RU",
-		City:          geo.City,
-		Region:        geo.Region,
-		ISP:           geo.ISP,
+		ExitIP:        exitIP,
 		Source:        c.Source,
 		TCPPingMs:     tcpPing,
-		AvgLatencyMs:  avgLat,
+		AvgLatencyMs:  totalLatency / int64(len(targets)),
 		Targets:       targets,
 		TargetCount:   len(targets),
 		DirectAccess:  directGov,
@@ -220,12 +245,13 @@ func CheckCandidate(c CandidateProxy) (*ProxyResult, bool) {
 	}, true
 }
 
-func testTargetURL(client *http.Client, targetURL string) (int64, bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), 4200*time.Millisecond)
+// testTarget запрашивает ресурс через прокси и проверяет, что пришла настоящая страница.
+func testTarget(client *http.Client, t TargetResource) (int64, bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	start := time.Now()
-	req, err := http.NewRequestWithContext(ctx, "GET", targetURL, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", t.URL, nil)
 	if err != nil {
 		return 0, false
 	}
@@ -239,71 +265,96 @@ func testTargetURL(client *http.Client, targetURL string) (int64, bool) {
 	}
 	defer resp.Body.Close()
 
-	bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 16384))
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 	elapsed := time.Since(start).Milliseconds()
 	if elapsed == 0 {
 		elapsed = 1
 	}
-
-	bodyLower := strings.ToLower(string(bodyBytes))
-	// Отсекаем фейковые прокси-заглушки (echo REMOTE_ADDR)
-	if strings.Contains(bodyLower, "remote_addr") || strings.Contains(bodyLower, "http_x_forwarded_for") {
+	if !evaluateResponse(t, resp.StatusCode, resp.Request.URL, body) {
 		return 0, false
 	}
-
-	// Для Мосгорсуда дополнительно проверяем, что это не пустая заглушка
-	if strings.Contains(targetURL, "mos-gorsud.ru") {
-		if resp.StatusCode == 200 && len(bodyBytes) > 500 &&
-			(strings.Contains(bodyLower, "суд") || strings.Contains(bodyLower, "mos-gorsud") || strings.Contains(bodyLower, "html")) {
-			return elapsed, true
-		}
-		return 0, false
-	}
-
-	// Считаем ресурс доступным, если код ответа 2xx или 3xx (не 403 Geo-Block и не 5xx)
-	if resp.StatusCode >= 200 && resp.StatusCode < 400 && len(bodyBytes) > 100 {
-		return elapsed, true
-	}
-	return 0, false
+	return elapsed, true
 }
 
-func buildProxyHTTPClient(proxyAddr, proto string, timeout time.Duration) (*http.Client, error) {
-	tlsConfig := &tls.Config{
-		InsecureSkipVerify: true,
-	}
+// Признаки страниц-заглушек, капч и анти-бот защиты.
+var blockMarkers = []string{
+	"remote_addr", "http_x_forwarded_for", // эхо-заглушки фейковых прокси
+	"checking your browser", "проверка браузера", "проверяем ваш браузер",
+	"доступ ограничен", "access denied", "are you a robot", "вы не робот",
+}
 
-	if proto == "socks5" {
-		transport := &http.Transport{
-			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-				return dialSOCKS5(ctx, proxyAddr, addr)
-			},
-			TLSClientConfig:       tlsConfig,
-			TLSHandshakeTimeout:   3500 * time.Millisecond,
-			ResponseHeaderTimeout: 3500 * time.Millisecond,
-			DisableKeepAlives:     true,
+// evaluateResponse решает, засчитывать ли ответ как успешный. Чистая функция — покрыта тестами.
+func evaluateResponse(t TargetResource, status int, finalURL *url.URL, body []byte) bool {
+	if status < 200 || status >= 300 || len(body) < 200 {
+		return false
+	}
+	if finalURL != nil {
+		if strings.Contains(strings.ToLower(finalURL.String()), "captcha") {
+			return false
 		}
-		return &http.Client{
-			Transport: transport,
-			Timeout:   timeout,
-		}, nil
+		// Редирект на чужой домен — признак подмены (реклама, фишинг-заглушка провайдера).
+		if want, err := url.Parse(t.URL); err == nil && !sameSite(want.Hostname(), finalURL.Hostname()) {
+			return false
+		}
 	}
-
-	proxyURL, err := url.Parse("http://" + proxyAddr)
-	if err != nil {
-		return nil, err
+	lower := strings.ToLower(string(body))
+	for _, m := range blockMarkers {
+		if strings.Contains(lower, m) {
+			return false
+		}
 	}
+	if len(t.Markers) == 0 {
+		return true
+	}
+	for _, m := range t.Markers {
+		if strings.Contains(lower, m) {
+			return true
+		}
+	}
+	return false
+}
 
+// sameSite: "www.cbr.ru" и "cbr.ru" считаются одним сайтом, как и поддомены.
+func sameSite(a, b string) bool {
+	a = strings.TrimPrefix(strings.ToLower(a), "www.")
+	b = strings.TrimPrefix(strings.ToLower(b), "www.")
+	return a == b || strings.HasSuffix(b, "."+a) || strings.HasSuffix(a, "."+b)
+}
+
+func (ch *Checker) buildProxyHTTPClient(proxyAddr, proto string, timeout time.Duration) (*http.Client, error) {
 	transport := &http.Transport{
-		Proxy:                 http.ProxyURL(proxyURL),
-		TLSClientConfig:       tlsConfig,
-		TLSHandshakeTimeout:   3500 * time.Millisecond,
-		ResponseHeaderTimeout: 3500 * time.Millisecond,
-		DisableKeepAlives:     true,
+		TLSClientConfig:        ch.tlsConfig(),
+		TLSHandshakeTimeout:    4 * time.Second,
+		ResponseHeaderTimeout:  4 * time.Second,
+		DisableKeepAlives:      true,
+		MaxResponseHeaderBytes: 64 * 1024,
 	}
-
+	switch proto {
+	case "socks5":
+		transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return dialSOCKS5(ctx, proxyAddr, addr)
+		}
+	case "http":
+		proxyURL, err := url.Parse("http://" + proxyAddr)
+		if err != nil {
+			return nil, err
+		}
+		transport.Proxy = http.ProxyURL(proxyURL)
+	default:
+		return nil, fmt.Errorf("unknown protocol %q", proto)
+	}
 	return &http.Client{
 		Transport: transport,
 		Timeout:   timeout,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 5 {
+				return errors.New("too many redirects")
+			}
+			if req.URL.Scheme != "https" {
+				return errors.New("redirect to non-https")
+			}
+			return nil
+		},
 	}, nil
 }
 
@@ -407,5 +458,7 @@ func dialSOCKS5(ctx context.Context, proxyAddr, targetAddr string) (net.Conn, er
 		return nil, err
 	}
 
+	// Рукопожатие закончено: дальше таймауты контролирует http.Transport.
+	_ = conn.SetDeadline(time.Time{})
 	return conn, nil
 }

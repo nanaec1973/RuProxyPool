@@ -383,14 +383,17 @@ func FetchAllCandidates(customList []CandidateProxy, maxTotal int) ([]CandidateP
 
 	addCandidate := func(c CandidateProxy) {
 		addr := strings.TrimSpace(c.Address)
-		host, port, err := net.SplitHostPort(addr)
-		if err != nil || host == "" || port == "" || net.ParseIP(host) == nil {
+		host, _, err := net.SplitHostPort(addr)
+		if err != nil || net.ParseIP(host) == nil {
+			return
+		}
+		// Защита от SSRF: только публичные IPv4 и «безопасные» порты
+		if !isAllowedProxyAddr(addr) {
 			return
 		}
 
 		// СТРОГИЙ ФИЛЬТР РФ: проверяем принадлежность IP к российским подсетям RIPE/IPDeny
-		isRU := globalRUCIDRs.IsRussianIP(host)
-		if !isRU {
+		if !globalRUCIDRs.IsRussianIP(host) {
 			mu.Lock()
 			skippedForeign++
 			mu.Unlock()
@@ -400,26 +403,13 @@ func FetchAllCandidates(customList []CandidateProxy, maxTotal int) ([]CandidateP
 		c.Country = "RU"
 		c.Address = addr
 
-		// Определяем протоколы для проверки этого российского сервера
-		var protos []string
-		switch c.Protocol {
-		case "socks5":
-			protos = []string{"socks5", "http"}
-		case "http":
-			protos = []string{"http", "socks5"}
-		default:
-			protos = []string{"socks5", "http"}
-		}
-
 		mu.Lock()
 		defer mu.Unlock()
-		for _, p := range protos {
-			key := p + "://" + addr
+		for _, item := range expandProtocols(c) {
+			key := item.Protocol + "://" + addr
 			if !seen[key] {
 				seen[key] = true
-				itemCopy := c
-				itemCopy.Protocol = p
-				ruProxies = append(ruProxies, itemCopy)
+				ruProxies = append(ruProxies, item)
 			}
 		}
 	}
